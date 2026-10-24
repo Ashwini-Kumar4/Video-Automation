@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { db, projects } from "@/db";
 import { eq } from "drizzle-orm";
@@ -71,44 +71,45 @@ export async function POST(req: NextRequest) {
     await db.update(projects).set(updatePayload).where(eq(projects.id, projectId));
 
     if (autoAnalyze) {
-      let dispatchedViaInngest = false;
-      try {
-        await inngest.send({
-          name: "video/process.analyze",
-          data: {
-            projectId,
-            userId,
-            videoUrl: signedUrl,
-            aspectRatio,
-            clipLength,
-            captionPreset,
-          },
-        });
-        dispatchedViaInngest = true;
-      } catch (inngestErr) {
-        console.warn(
-          `[API:projects/upload/complete] Inngest dev server offline (${(inngestErr as Error)?.message}). Executing direct AI analysis worker...`
-        );
-      }
+      after(async () => {
+        let dispatchedViaInngest = false;
+        if (process.env.INNGEST_EVENT_KEY) {
+          try {
+            await inngest.send({
+              name: "video/process.analyze",
+              data: {
+                projectId,
+                userId,
+                videoUrl: signedUrl,
+                aspectRatio,
+                clipLength,
+                captionPreset,
+              },
+            });
+            dispatchedViaInngest = true;
+          } catch (inngestErr) {
+            console.warn(
+              `[API:projects/upload/complete] Inngest send error (${(inngestErr as Error)?.message}). Falling back to direct worker...`
+            );
+          }
+        }
 
-      if (!dispatchedViaInngest) {
-        import("@/lib/workers/upload-worker")
-          .then(({ executeDirectAiAnalysis }) => {
-            executeDirectAiAnalysis({
+        if (!dispatchedViaInngest) {
+          try {
+            const { executeDirectAiAnalysis } = await import("@/lib/workers/upload-worker");
+            await executeDirectAiAnalysis({
               projectId,
               userId,
               videoUrl: signedUrl,
               aspectRatio,
               clipLength,
               captionPreset,
-            }).catch((err) => {
-              console.error("[API:projects/upload/complete] Direct AI analysis error:", err);
             });
-          })
-          .catch((err) => {
-            console.error("[API:projects/upload/complete] Failed to import upload-worker:", err);
-          });
-      }
+          } catch (workerErr) {
+            console.error("[API:projects/upload/complete] Direct AI analysis worker error:", workerErr);
+          }
+        }
+      });
     }
 
     return NextResponse.json({

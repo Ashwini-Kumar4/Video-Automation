@@ -1,9 +1,11 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { db, projects } from "@/db";
 import { eq } from "drizzle-orm";
 import { inngest } from "@/lib/inngest/client";
 import { protectAiEndpoint } from "@/lib/arcjet";
 import { executeDirectAiAnalysis } from "@/lib/workers/upload-worker";
+
+export const maxDuration = 300;
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -155,48 +157,54 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       })
       .where(eq(projects.id, projectId));
 
-    // Send event to Inngest background workflow with direct fallback
     let inngestEventId = "";
-    let dispatchedViaInngest = false;
-    try {
-      const sendResult = await inngest.send({
-        name: "video/process.analyze",
-        data: {
-          projectId,
-          videoUrl,
-          tempFilePath,
-          userId: project.userId,
-          title: project.title,
-          aspectRatio: bodyData.aspectRatio || project.aspectRatio || "9:16",
-          clipLength: bodyData.clipLength || project.clipLength || "30-60s",
-          captionPreset: bodyData.captionPreset || project.captionPreset || "hormozi",
-        },
-      });
 
-      inngestEventId = sendResult?.ids?.[0] || "";
-      dispatchedViaInngest = true;
-      console.log(
-        `[API:analyze] Dispatched video/process.analyze for project ${projectId}. EventId: ${inngestEventId}`
-      );
-    } catch (inngestErr) {
-      console.warn(
-        `[API:analyze] Inngest dev server offline (${(inngestErr as Error)?.message}). Executing direct AI analysis fallback worker...`
-      );
-    }
+    after(async () => {
+      let dispatchedViaInngest = false;
+      if (process.env.INNGEST_EVENT_KEY) {
+        try {
+          const sendResult = await inngest.send({
+            name: "video/process.analyze",
+            data: {
+              projectId,
+              videoUrl,
+              tempFilePath,
+              userId: project.userId,
+              title: project.title,
+              aspectRatio: bodyData.aspectRatio || project.aspectRatio || "9:16",
+              clipLength: bodyData.clipLength || project.clipLength || "30-60s",
+              captionPreset: bodyData.captionPreset || project.captionPreset || "hormozi",
+            },
+          });
 
-    if (!dispatchedViaInngest) {
-      executeDirectAiAnalysis({
-        projectId,
-        userId: project.userId,
-        videoUrl,
-        tempFilePath,
-        aspectRatio: bodyData.aspectRatio || project.aspectRatio || "9:16",
-        clipLength: bodyData.clipLength || project.clipLength || "30-60s",
-        captionPreset: bodyData.captionPreset || project.captionPreset || "hormozi",
-      }).catch((workerErr) => {
-        console.error(`[API:analyze] Direct worker error:`, workerErr);
-      });
-    }
+          inngestEventId = sendResult?.ids?.[0] || "";
+          dispatchedViaInngest = true;
+          console.log(
+            `[API:analyze] Dispatched video/process.analyze for project ${projectId}. EventId: ${inngestEventId}`
+          );
+        } catch (inngestErr) {
+          console.warn(
+            `[API:analyze] Inngest send error (${(inngestErr as Error)?.message}). Executing direct AI analysis fallback worker...`
+          );
+        }
+      }
+
+      if (!dispatchedViaInngest) {
+        try {
+          await executeDirectAiAnalysis({
+            projectId,
+            userId: project.userId,
+            videoUrl,
+            tempFilePath,
+            aspectRatio: bodyData.aspectRatio || project.aspectRatio || "9:16",
+            clipLength: bodyData.clipLength || project.clipLength || "30-60s",
+            captionPreset: bodyData.captionPreset || project.captionPreset || "hormozi",
+          });
+        } catch (workerErr) {
+          console.error(`[API:analyze] Direct worker error:`, workerErr);
+        }
+      }
+    });
 
     return NextResponse.json({
       success: true,

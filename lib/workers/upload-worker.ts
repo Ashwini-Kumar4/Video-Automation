@@ -203,6 +203,21 @@ export async function executeDirectAiAnalysis(
       }
     }
 
+    // If video is in AWS S3, generate a fresh 24h signed GET URL for Deepgram & playback
+    if (project.s3Key && (!videoSourceToUse || videoSourceToUse.startsWith("blob:") || !videoSourceToUse.startsWith("http"))) {
+      try {
+        const { generateSignedVideoUrl } = await import("@/lib/aws/s3");
+        videoSourceToUse = await generateSignedVideoUrl({
+          key: project.s3Key,
+          bucket: project.s3Bucket || undefined,
+          expiresInSeconds: 86400,
+        });
+        console.log(`[AnalyzeWorker] Generated fresh 24h S3 signed URL for project ${projectId}`);
+      } catch (signErr) {
+        console.warn(`[AnalyzeWorker] Error generating fresh S3 signed URL:`, signErr);
+      }
+    }
+
     // Stage 1: Deepgram Transcription
     await db
       .update(projects)
