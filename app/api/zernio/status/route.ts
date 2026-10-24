@@ -8,6 +8,7 @@ import {
   listZernioAccounts,
   ZERNIO_PLATFORMS,
 } from "@/lib/zernio";
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {

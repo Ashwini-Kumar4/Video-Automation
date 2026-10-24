@@ -109,9 +109,9 @@ console.log("\n📋 Add this CORS policy to your S3 bucket (vidshorts-uploads-as
 console.log(JSON.stringify([
   {
     "AllowedHeaders": ["*"],
-    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedMethods": ["GET", "HEAD", "PUT", "POST"],
     "AllowedOrigins": ["http://localhost:3000", "https://*.vercel.app", "*"],
-    "ExposeHeaders": ["Content-Length", "Content-Range", "Accept-Ranges"],
+    "ExposeHeaders": ["ETag", "Content-Length", "Content-Range", "Accept-Ranges"],
     "MaxAgeSeconds": 3000
   }
 ], null, 2));

@@ -7,6 +7,11 @@ import { protectVideoUpload, getUserDailyUploadStats } from "@/lib/arcjet";
 import fs from "fs/promises";
 import path from "path";
 import { executeDirectUploadAndAnalysis } from "@/lib/workers/upload-worker";
+import {
+  generatePresignedUploadUrl,
+  generateSignedVideoUrl,
+  getS3Config,
+} from "@/lib/aws/s3";
 
 export const maxDuration = 300;
 
@@ -79,6 +84,7 @@ export async function POST(req: NextRequest) {
     let captionPreset = "hormozi";
     let sourceType: "upload" | "sample" | "url" = "upload";
     let title = "Untitled Video";
+    let isPresign = false;
 
     // Generate unique project ID upfront so all staged assets and logs correlate to it
     const projectId = `proj_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -116,8 +122,9 @@ export async function POST(req: NextRequest) {
         fileName = title || "Sample_Video.mp4";
       }
     } else {
-      // JSON body (e.g. for URL or sample video upload)
+      // JSON body (e.g. for URL or sample video upload, or direct S3 presigned upload)
       const body = await req.json();
+      isPresign = body.action === "presign" || (body.sourceType === "upload" && !body.videoUrl);
       title = body.title || "Untitled Video";
       fileName = body.fileName || title || "video.mp4";
       fileType = body.fileType || "video/mp4";
@@ -148,9 +155,68 @@ export async function POST(req: NextRequest) {
           error: securityCheck.error,
           reason: securityCheck.reason,
           details: securityCheck.details,
+          isArcjetError: true,
         },
         { status: securityCheck.status || 403 }
       );
+    }
+
+    // Direct Client-to-S3 Presigned Upload (bypasses Vercel 4.5MB serverless payload limit)
+    if (isPresign) {
+      const s3Config = getS3Config();
+      const safeFileName = (fileName || "video.mp4").replace(/[^a-zA-Z0-9._-]/g, "_");
+      const s3Key = `users/${userId}/projects/${projectId}/${Date.now()}_${safeFileName}`;
+      const contentTypeToUse = fileType || "video/mp4";
+
+      const { uploadUrl, bucket } = await generatePresignedUploadUrl({
+        key: s3Key,
+        contentType: contentTypeToUse,
+      });
+
+      const signedUrl = await generateSignedVideoUrl({
+        key: s3Key,
+        bucket,
+      });
+      const s3Url = `https://${bucket}.s3.${s3Config.region}.amazonaws.com/${s3Key}`;
+
+      const [newProject] = await db
+        .insert(projects)
+        .values({
+          id: projectId,
+          userId,
+          title: title || fileName,
+          originalFileName: fileName,
+          fileSize,
+          fileSizeBytes,
+          duration,
+          durationSeconds,
+          resolution,
+          format,
+          aspectRatio,
+          clipLength,
+          captionPreset,
+          sourceType: "upload",
+          s3Key,
+          s3Bucket: bucket,
+          s3Url,
+          signedUrl,
+          sourceUrl: signedUrl,
+          status: "uploading",
+          progress: 15,
+          stage: "Uploading video directly to AWS S3 storage...",
+        })
+        .returning();
+
+      return NextResponse.json({
+        success: true,
+        projectId,
+        uploadUrl,
+        s3Key,
+        s3Bucket: bucket,
+        signedUrl,
+        s3Url,
+        project: newProject,
+      });
     }
 
     // Create project record in Neon PostgreSQL Database

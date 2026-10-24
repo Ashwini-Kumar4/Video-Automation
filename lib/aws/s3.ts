@@ -177,3 +177,50 @@ export async function generateSignedVideoUrl({
     expiresIn: expiresInSeconds,
   });
 }
+
+/**
+ * Generates an AWS S3 presigned PUT URL for direct browser-to-S3 uploads.
+ * This completely bypasses Vercel's 4.5MB Serverless Function payload limit.
+ */
+export async function generatePresignedUploadUrl({
+  key,
+  contentType,
+  bucket,
+  expiresInSeconds = 3600,
+}: {
+  key: string;
+  contentType: string;
+  bucket?: string;
+  expiresInSeconds?: number;
+}): Promise<{ uploadUrl: string; key: string; bucket: string; isConfigured: boolean }> {
+  const config = getS3Config();
+  const targetBucket = bucket || config.bucket;
+
+  if (!config.isConfigured) {
+    console.warn(`[S3] Warning: AWS S3 credentials not configured for presigned upload: ${key}`);
+    return {
+      uploadUrl: `https://${targetBucket}.s3.${config.region}.amazonaws.com/${encodeURIComponent(key)}`,
+      key,
+      bucket: targetBucket,
+      isConfigured: false,
+    };
+  }
+
+  const client = getS3Client();
+  const putCommand = new PutObjectCommand({
+    Bucket: targetBucket,
+    Key: key,
+    ContentType: contentType,
+  });
+
+  const uploadUrl = await getSignedUrl(client, putCommand, {
+    expiresIn: expiresInSeconds,
+  });
+
+  return {
+    uploadUrl,
+    key,
+    bucket: targetBucket,
+    isConfigured: true,
+  };
+}

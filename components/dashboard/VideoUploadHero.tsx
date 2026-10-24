@@ -84,6 +84,7 @@ export function VideoUploadHero({
   const [s3Bucket, setS3Bucket] = useState<string | null>(null);
   const [currentStageText, setCurrentStageText] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isArcjetBlocked, setIsArcjetBlocked] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [quotaStats, setQuotaStats] = useState<{
     uploadsToday: number;
@@ -93,6 +94,7 @@ export function VideoUploadHero({
     enforceLimit?: boolean;
   } | null>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const activeXhrRef = useRef<XMLHttpRequest | null>(null);
 
   // Fetch daily upload quota (Trial mode: unlimited until requested)
   const fetchQuota = async () => {
@@ -283,14 +285,16 @@ export function VideoUploadHero({
     setIsMuted(!isMuted);
   };
 
-  // Helper to upload with real-time XHR progress tracking
-  const uploadVideoWithXhr = (
-    data: FormData | string,
-    isJson: boolean,
+  // Helper to upload video directly to AWS S3 using presigned PUT URL
+  // Completely eliminates Vercel 4.5MB Serverless Function payload limit (HTTP 413)
+  const uploadDirectToS3 = (
+    uploadUrl: string,
+    file: File,
     onProgressUpdate: (pct: number, speed: string, remaining: string) => void
-  ): Promise<any> => {
+  ): Promise<void> => {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
+      activeXhrRef.current = xhr;
       const startTime = Date.now();
 
       if (xhr.upload) {
@@ -307,34 +311,43 @@ export function VideoUploadHero({
             const remainingStr = `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
             const speedStr = `${speedMbs} MB/s`;
 
-            // Progress smoothly transitions from 15% to 75% as bytes are sent
-            const pct = Math.min(75, Math.max(15, Math.round((event.loaded / event.total) * 75)));
+            // Progress smoothly transitions from 20% to 85% as bytes are sent to S3
+            const pct = Math.min(85, Math.max(20, Math.round((event.loaded / event.total) * 65) + 20));
             onProgressUpdate(pct, speedStr, remainingStr);
           }
         };
       }
 
       xhr.onload = () => {
-        try {
-          const res = JSON.parse(xhr.responseText);
-          if (xhr.status >= 200 && xhr.status < 300 && res.success) {
-            resolve(res);
-          } else {
-            reject(new Error(res.error || `Upload failed with status ${xhr.status}`));
-          }
-        } catch {
-          reject(new Error(`Failed to parse server response (${xhr.status})`));
+        activeXhrRef.current = null;
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          reject(
+            new Error(
+              `AWS S3 upload failed with status ${xhr.status}. Please ensure your S3 bucket has CORS enabled for PUT requests in AWS Console.`
+            )
+          );
         }
       };
 
-      xhr.onerror = () => reject(new Error("Network connection error during video upload"));
-      xhr.onabort = () => reject(new Error("Video upload cancelled"));
+      xhr.onerror = () => {
+        activeXhrRef.current = null;
+        reject(
+          new Error(
+            "Direct AWS S3 upload failed (CORS or network error). Please ensure your AWS S3 bucket has CORS configured for PUT requests in the AWS Console."
+          )
+        );
+      };
 
-      xhr.open("POST", "/api/projects/upload", true);
-      if (isJson) {
-        xhr.setRequestHeader("Content-Type", "application/json");
-      }
-      xhr.send(data);
+      xhr.onabort = () => {
+        activeXhrRef.current = null;
+        reject(new Error("Video upload cancelled"));
+      };
+
+      xhr.open("PUT", uploadUrl, true);
+      xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
+      xhr.send(file);
     });
   };
 
@@ -345,41 +358,102 @@ export function VideoUploadHero({
       setErrorMessage(
         "Daily upload limit reached: You can upload only 2 videos a day. Your quota will reset tomorrow (next day) to generate new short videos."
       );
+      setIsArcjetBlocked(true);
       return;
     }
     setUploadStatus("uploading");
     setUploadProgress(15);
     setCurrentStageIndex(0);
     setErrorMessage(null);
-    setCurrentStageText("Uploading video stream to server...");
+    setIsArcjetBlocked(false);
+    setCurrentStageText("Initializing AWS S3 upload pipeline...");
 
     try {
-      let resData: any;
+      let newProjectId = "";
+      let uploadedS3Key = "";
+      let uploadedS3Bucket = "";
+      let uploadedSignedUrl = "";
 
       if (selectedVideo.file) {
-        // Upload user selected file via FormData with live byte progress
-        const formData = new FormData();
-        formData.append("file", selectedVideo.file);
-        formData.append("title", selectedVideo.name);
-        formData.append("duration", selectedVideo.duration);
-        formData.append("durationSeconds", String(selectedVideo.durationSeconds));
-        formData.append("resolution", selectedVideo.resolution);
-        formData.append("format", selectedVideo.format);
-        formData.append("aspectRatio", aspectRatio);
-        formData.append("clipLength", clipLength);
-        formData.append("captionPreset", captionPreset);
-        formData.append("sourceType", "upload");
+        // Step 1: Request presigned S3 upload URL with video metadata (tiny JSON, bypasses Vercel 4.5MB limit)
+        const presignRes = await fetch("/api/projects/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "presign",
+            title: selectedVideo.name,
+            fileName: selectedVideo.name,
+            fileType: selectedVideo.file.type || "video/mp4",
+            fileSizeBytes: selectedVideo.file.size,
+            fileSize: `${(selectedVideo.file.size / (1024 * 1024)).toFixed(1)} MB`,
+            duration: selectedVideo.duration,
+            durationSeconds: selectedVideo.durationSeconds,
+            resolution: selectedVideo.resolution,
+            format: selectedVideo.format,
+            aspectRatio,
+            clipLength,
+            captionPreset,
+            sourceType: "upload",
+          }),
+        });
 
-        resData = await uploadVideoWithXhr(formData, false, (pct, speed, remaining) => {
+        const presignData = await presignRes.json();
+        if (!presignRes.ok || !presignData.success) {
+          if (presignData.isArcjetError) setIsArcjetBlocked(true);
+          throw new Error(presignData.error || "Failed to initialize video upload");
+        }
+
+        newProjectId = presignData.projectId;
+        uploadedS3Key = presignData.s3Key;
+        uploadedS3Bucket = presignData.s3Bucket;
+        uploadedSignedUrl = presignData.signedUrl;
+
+        setProjectId(newProjectId);
+        setCurrentStageText("Streaming video directly to AWS S3 bucket...");
+
+        // Step 2: Upload file directly to AWS S3 bucket via presigned PUT URL
+        await uploadDirectToS3(presignData.uploadUrl, selectedVideo.file, (pct, speed, remaining) => {
           setUploadProgress(pct);
           setUploadSpeed(speed);
           setTimeRemaining(remaining);
           if (pct >= 50) setCurrentStageIndex(1);
         });
+
+        // Step 3: Complete upload registration in database
+        setCurrentStageText("Finalizing upload in AWS S3...");
+        setUploadProgress(90);
+        setCurrentStageIndex(2);
+
+        await fetch("/api/projects/upload/complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: newProjectId,
+            s3Key: uploadedS3Key,
+            s3Bucket: uploadedS3Bucket,
+            signedUrl: uploadedSignedUrl,
+            autoAnalyze: false,
+            aspectRatio,
+            clipLength,
+            captionPreset,
+          }),
+        });
+
+        setUploadProgress(100);
+        setCurrentStageIndex(3);
+        setUploadStatus("completed");
+        setCurrentStageText("Video successfully uploaded and saved in AWS S3 bucket!");
+        if (uploadedSignedUrl) setSignedUrl(uploadedSignedUrl);
+        if (uploadedS3Key) setS3Key(uploadedS3Key);
+        if (uploadedS3Bucket) setS3Bucket(uploadedS3Bucket);
+        if (onGenerateClips) onGenerateClips();
+        return;
       } else {
         // Remote URL or sample video
-        resData = await uploadVideoWithXhr(
-          JSON.stringify({
+        const sampleRes = await fetch("/api/projects/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
             title: selectedVideo.name,
             videoUrl: selectedVideo.previewUrl,
             duration: selectedVideo.duration,
@@ -391,16 +465,16 @@ export function VideoUploadHero({
             captionPreset,
             sourceType: "sample",
           }),
-          true,
-          (pct, speed, remaining) => {
-            setUploadProgress(pct);
-            setUploadSpeed(speed);
-            setTimeRemaining(remaining);
-          }
-        );
+        });
+
+        const resData = await sampleRes.json();
+        if (!sampleRes.ok || !resData.success) {
+          if (resData.isArcjetError) setIsArcjetBlocked(true);
+          throw new Error(resData.error || "Failed to initialize sample video");
+        }
+        newProjectId = resData.projectId;
       }
 
-      const newProjectId = resData.projectId;
       setProjectId(newProjectId);
       setUploadProgress(75);
       setCurrentStageIndex(1);
@@ -494,46 +568,92 @@ export function VideoUploadHero({
     }
   };
 
-  // 1-Click Upload and immediate navigation to Project page
+  // 1-Click Upload directly to S3 and immediate navigation to Project page
   const startUploadAndAnalyze = async () => {
     if (!selectedVideo) return;
     if (quotaStats && quotaStats.enforceLimit && quotaStats.remaining <= 0) {
       setErrorMessage(
         "Daily upload limit reached: You can upload only 2 videos a day. Your quota will reset tomorrow (next day) to generate new short videos."
       );
+      setIsArcjetBlocked(true);
       return;
     }
     setIsTriggeringAi(true);
     setUploadStatus("uploading");
     setUploadProgress(15);
     setErrorMessage(null);
-    setCurrentStageText("Initializing Inngest pipeline & creating project...");
+    setIsArcjetBlocked(false);
+    setCurrentStageText("Initializing AWS S3 upload pipeline...");
 
     try {
-      let resData: any;
+      let newProjectId = "";
 
       if (selectedVideo.file) {
-        const formData = new FormData();
-        formData.append("file", selectedVideo.file);
-        formData.append("title", selectedVideo.name);
-        formData.append("duration", selectedVideo.duration);
-        formData.append("durationSeconds", String(selectedVideo.durationSeconds));
-        formData.append("resolution", selectedVideo.resolution);
-        formData.append("format", selectedVideo.format);
-        formData.append("aspectRatio", aspectRatio);
-        formData.append("clipLength", clipLength);
-        formData.append("captionPreset", captionPreset);
-        formData.append("sourceType", "upload");
+        // Step 1: Request presigned S3 upload URL with metadata (tiny JSON, bypasses Vercel 4.5MB limit)
+        const presignRes = await fetch("/api/projects/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "presign",
+            title: selectedVideo.name,
+            fileName: selectedVideo.name,
+            fileType: selectedVideo.file.type || "video/mp4",
+            fileSizeBytes: selectedVideo.file.size,
+            fileSize: `${(selectedVideo.file.size / (1024 * 1024)).toFixed(1)} MB`,
+            duration: selectedVideo.duration,
+            durationSeconds: selectedVideo.durationSeconds,
+            resolution: selectedVideo.resolution,
+            format: selectedVideo.format,
+            aspectRatio,
+            clipLength,
+            captionPreset,
+            sourceType: "upload",
+          }),
+        });
 
-        resData = await uploadVideoWithXhr(formData, false, (pct, speed, remaining) => {
+        const presignData = await presignRes.json();
+        if (!presignRes.ok || !presignData.success) {
+          if (presignData.isArcjetError) setIsArcjetBlocked(true);
+          throw new Error(presignData.error || "Failed to initialize video upload");
+        }
+
+        newProjectId = presignData.projectId;
+        setProjectId(newProjectId);
+        setCurrentStageText("Streaming video directly to AWS S3 bucket...");
+
+        // Step 2: Upload file directly to AWS S3 bucket (bypassing Vercel Serverless proxy)
+        await uploadDirectToS3(presignData.uploadUrl, selectedVideo.file, (pct, speed, remaining) => {
           setUploadProgress(pct);
           setUploadSpeed(speed);
           setTimeRemaining(remaining);
           if (pct >= 50) setCurrentStageIndex(1);
         });
+
+        // Step 3: Trigger AI analysis in background and complete project registration
+        setCurrentStageText("Uploaded to AWS S3! Triggering Deepgram transcription & AI Shorts...");
+        setUploadProgress(90);
+        setCurrentStageIndex(2);
+
+        await fetch("/api/projects/upload/complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: newProjectId,
+            s3Key: presignData.s3Key,
+            s3Bucket: presignData.s3Bucket,
+            signedUrl: presignData.signedUrl,
+            autoAnalyze: true,
+            aspectRatio,
+            clipLength,
+            captionPreset,
+          }),
+        });
       } else {
-        resData = await uploadVideoWithXhr(
-          JSON.stringify({
+        // Sample or remote URL video
+        const sampleRes = await fetch("/api/projects/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
             title: selectedVideo.name,
             videoUrl: selectedVideo.previewUrl,
             duration: selectedVideo.duration,
@@ -545,24 +665,20 @@ export function VideoUploadHero({
             captionPreset,
             sourceType: "sample",
           }),
-          true,
-          (pct, speed, remaining) => {
-            setUploadProgress(pct);
-            setUploadSpeed(speed);
-            setTimeRemaining(remaining);
-          }
-        );
-      }
+        });
 
-      const newProjectId = resData.projectId;
-      setProjectId(newProjectId);
-      setUploadProgress(85);
-      setCurrentStageIndex(1);
-      setCurrentStageText("Uploaded! Dispatching to Inngest AI short generator...");
+        const resData = await sampleRes.json();
+        if (!sampleRes.ok || !resData.success) {
+          if (resData.isArcjetError) setIsArcjetBlocked(true);
+          throw new Error(resData.error || "Failed to initialize sample video");
+        }
 
-      // For sample/URL videos (no file staging), trigger analyze directly.
-      // For uploaded files, the Inngest upload workflow automatically triggers analyze once S3 upload finishes.
-      if (!selectedVideo.file) {
+        newProjectId = resData.projectId;
+        setProjectId(newProjectId);
+        setUploadProgress(85);
+        setCurrentStageIndex(1);
+        setCurrentStageText("Uploaded! Dispatching to Inngest AI short generator...");
+
         await fetch(`/api/projects/${newProjectId}/analyze`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -587,11 +703,18 @@ export function VideoUploadHero({
   };
 
   const cancelUpload = () => {
+    if (activeXhrRef.current) {
+      try {
+        activeXhrRef.current.abort();
+      } catch {}
+      activeXhrRef.current = null;
+    }
     if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
     setUploadStatus("idle");
     setUploadProgress(0);
     setErrorMessage(null);
+    setIsArcjetBlocked(false);
   };
 
   const removeVideo = () => {
@@ -1026,23 +1149,32 @@ export function VideoUploadHero({
             )}
 
             {/* Error Message Notification */}
-            {errorMessage && (
-              <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-start gap-3 text-rose-300 text-xs">
-                <AlertCircle className="size-4 shrink-0 text-rose-400 mt-0.5" />
-                <div className="flex-1">
-                  <p className="font-bold text-white">Upload Error</p>
-                  <p className="mt-0.5 text-rose-200">{errorMessage}</p>
+            {errorMessage &&
+              !(
+                isArcjetBlocked ||
+                errorMessage.toLowerCase().includes("daily upload limit") ||
+                errorMessage.toLowerCase().includes("arcjet") ||
+                (quotaStats && quotaStats.enforceLimit && quotaStats.remaining <= 0)
+              ) && (
+                <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-start gap-3 text-rose-300 text-xs">
+                  <AlertCircle className="size-4 shrink-0 text-rose-400 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="font-bold text-white">Upload Error</p>
+                    <p className="mt-0.5 text-rose-200">{errorMessage}</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setErrorMessage(null);
+                      setIsArcjetBlocked(false);
+                    }}
+                    className="h-6 px-2 text-rose-400 hover:text-white"
+                  >
+                    Dismiss
+                  </Button>
                 </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setErrorMessage(null)}
-                  className="h-6 px-2 text-rose-400 hover:text-white"
-                >
-                  Dismiss
-                </Button>
-              </div>
-            )}
+              )}
 
             {/* Upload Progress State Section */}
             {uploadStatus !== "idle" && (
@@ -1245,36 +1377,43 @@ export function VideoUploadHero({
             )}
 
             {/* Security Alert / Rate Limit / Prompt Injection Banner */}
-            {errorMessage && (
-              <div className="p-4 rounded-2xl border border-rose-500/30 bg-rose-950/40 backdrop-blur-md text-rose-200 flex items-start gap-3 shadow-lg shadow-rose-950/40 mb-3 animate-in fade-in slide-in-from-top-2">
-                <ShieldAlert className="size-5 text-rose-400 shrink-0 mt-0.5" />
-                <div className="flex-1">
-                  <h4 className="text-xs font-bold text-rose-300 uppercase tracking-wider flex items-center gap-1.5">
-                    <span>Arcjet Security Notice</span>
+            {errorMessage &&
+              (isArcjetBlocked ||
+                errorMessage.toLowerCase().includes("daily upload limit") ||
+                errorMessage.toLowerCase().includes("arcjet") ||
+                (quotaStats && quotaStats.enforceLimit && quotaStats.remaining <= 0)) && (
+                <div className="p-4 rounded-2xl border border-rose-500/30 bg-rose-950/40 backdrop-blur-md text-rose-200 flex items-start gap-3 shadow-lg shadow-rose-950/40 mb-3 animate-in fade-in slide-in-from-top-2">
+                  <ShieldAlert className="size-5 text-rose-400 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <h4 className="text-xs font-bold text-rose-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <span>Arcjet Security Notice</span>
+                      {quotaStats && quotaStats.enforceLimit && quotaStats.remaining <= 0 && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300 font-semibold border border-rose-500/30">
+                          Daily Limit 2/2
+                        </span>
+                      )}
+                    </h4>
+                    <p className="text-xs text-rose-200/90 mt-1 leading-relaxed">{errorMessage}</p>
                     {quotaStats && quotaStats.enforceLimit && quotaStats.remaining <= 0 && (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300 font-semibold border border-rose-500/30">
-                        Daily Limit 2/2
-                      </span>
+                      <p className="text-[11px] text-rose-300/80 mt-1.5 flex items-center gap-1.5 font-medium">
+                        <Clock className="size-3 text-rose-400" />
+                        <span>Upload quota resets tomorrow at 00:00 UTC (Next Day)</span>
+                      </p>
                     )}
-                  </h4>
-                  <p className="text-xs text-rose-200/90 mt-1 leading-relaxed">{errorMessage}</p>
-                  {quotaStats && quotaStats.enforceLimit && quotaStats.remaining <= 0 && (
-                    <p className="text-[11px] text-rose-300/80 mt-1.5 flex items-center gap-1.5 font-medium">
-                      <Clock className="size-3 text-rose-400" />
-                      <span>Upload quota resets tomorrow at 00:00 UTC (Next Day)</span>
-                    </p>
-                  )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErrorMessage(null);
+                      setIsArcjetBlocked(false);
+                    }}
+                    className="text-rose-400 hover:text-white transition-colors cursor-pointer"
+                    title="Dismiss"
+                  >
+                    <X className="size-4" />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setErrorMessage(null)}
-                  className="text-rose-400 hover:text-white transition-colors cursor-pointer"
-                  title="Dismiss"
-                >
-                  <X className="size-4" />
-                </button>
-              </div>
-            )}
+              )}
 
             {/* Action Buttons Bar */}
             <div className="pt-2">
