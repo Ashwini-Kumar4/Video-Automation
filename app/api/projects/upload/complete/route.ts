@@ -3,9 +3,9 @@ import { auth, currentUser } from "@clerk/nextjs/server";
 import { db, projects } from "@/db";
 import { eq } from "drizzle-orm";
 import { inngest } from "@/lib/inngest/client";
-import { executeDirectAiAnalysis } from "@/lib/workers/upload-worker";
 import { generateSignedVideoUrl } from "@/lib/aws/s3";
 
+export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
@@ -93,16 +93,22 @@ export async function POST(req: NextRequest) {
       }
 
       if (!dispatchedViaInngest) {
-        executeDirectAiAnalysis({
-          projectId,
-          userId,
-          videoUrl: signedUrl,
-          aspectRatio,
-          clipLength,
-          captionPreset,
-        }).catch((err) => {
-          console.error("[API:projects/upload/complete] Direct AI analysis error:", err);
-        });
+        import("@/lib/workers/upload-worker")
+          .then(({ executeDirectAiAnalysis }) => {
+            executeDirectAiAnalysis({
+              projectId,
+              userId,
+              videoUrl: signedUrl,
+              aspectRatio,
+              clipLength,
+              captionPreset,
+            }).catch((err) => {
+              console.error("[API:projects/upload/complete] Direct AI analysis error:", err);
+            });
+          })
+          .catch((err) => {
+            console.error("[API:projects/upload/complete] Failed to import upload-worker:", err);
+          });
       }
     }
 

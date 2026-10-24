@@ -238,9 +238,9 @@ export async function transcribeVideoWithDeepgram(
           },
           body: new Uint8Array(videoSource),
         });
-      } else if (localFilePath && fs.existsSync(localFilePath)) {
+      } else if (localFilePath && fs.existsSync(/*turbopackIgnore: true*/ localFilePath)) {
         console.log(`[Deepgram] Transcribing local video file on disk: ${localFilePath}`);
-        const fileBuf = fs.readFileSync(localFilePath);
+        const fileBuf = fs.readFileSync(/*turbopackIgnore: true*/ localFilePath);
         response = await fetch(deepgramUrl, {
           method: "POST",
           headers: {
