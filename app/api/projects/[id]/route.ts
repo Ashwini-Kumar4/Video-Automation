@@ -38,11 +38,20 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
       .from(shortVideos)
       .where(eq(shortVideos.projectId, id));
 
-    return NextResponse.json({
-      success: true,
-      project,
-      shorts: projectShorts,
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        project,
+        shorts: projectShorts,
+      },
+      {
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",
+          Pragma: "no-cache",
+          Expires: "0",
+        },
+      }
+    );
   } catch (error: unknown) {
     console.error("[API:projects/[id]] Error fetching project:", error);
     return NextResponse.json(

@@ -204,7 +204,7 @@ export async function executeDirectAiAnalysis(
     }
 
     // If video is in AWS S3, generate a fresh 24h signed GET URL for Deepgram & playback
-    if (project.s3Key && (!videoSourceToUse || videoSourceToUse.startsWith("blob:") || !videoSourceToUse.startsWith("http"))) {
+    if (project.s3Key && (videoSourceToUse.startsWith("http") || videoSourceToUse.startsWith("blob:") || !videoSourceToUse)) {
       try {
         const { generateSignedVideoUrl } = await import("@/lib/aws/s3");
         videoSourceToUse = await generateSignedVideoUrl({

@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
+import { connection } from "next/server";
 import { db, projects, shortVideos } from "@/db";
 import { eq } from "drizzle-orm";
 import { ProjectDetailView } from "@/components/dashboard/ProjectDetailView";
@@ -38,6 +39,7 @@ function ProjectLoadingSkeleton() {
 }
 
 async function ProjectContent({ params }: PageProps) {
+  await connection();
   const { id } = await params;
 
   if (!id) {

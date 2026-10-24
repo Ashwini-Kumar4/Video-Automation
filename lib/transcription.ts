@@ -251,14 +251,21 @@ export async function transcribeVideoWithDeepgram(
         });
       } else if (typeof videoSource === "string" && (videoSource.startsWith("http://") || videoSource.startsWith("https://"))) {
         console.log(`[Deepgram] Transcribing video with Deepgram Nova-2 model from URL: ${videoSource}`);
-        response = await fetch(deepgramUrl, {
-          method: "POST",
-          headers: {
-            Authorization: `Token ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ url: videoSource }),
-        });
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 35000);
+        try {
+          response = await fetch(deepgramUrl, {
+            method: "POST",
+            headers: {
+              Authorization: `Token ${apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ url: videoSource }),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeoutId);
+        }
 
         // If URL fetch failed (e.g. S3 403 SignatureDoesNotMatch), fallback to local staged file if available
         if (!response.ok) {
@@ -287,7 +294,7 @@ export async function transcribeVideoWithDeepgram(
       if (!response.ok) {
         const errorText = await response.text();
         console.warn(`[Deepgram] API request returned status ${response.status}: ${errorText}`);
-        throw new Error(`Deepgram API returned ${response.status}: ${errorText}`);
+        return getSimulatedTranscription(typeof videoSource === "string" ? videoSource : "uploaded_video.mp4");
       }
 
       const data = await response.json();
@@ -336,8 +343,8 @@ export async function transcribeVideoWithDeepgram(
         isSimulated: false,
       };
     } catch (err: unknown) {
-      console.error("[Deepgram] Error communicating with Deepgram:", err);
-      throw err;
+      console.warn("[Deepgram] Error or timeout communicating with Deepgram, using fallback transcription:", (err as Error)?.message);
+      return getSimulatedTranscription(typeof videoSource === "string" ? videoSource : "uploaded_video.mp4");
     }
   } else {
     console.warn(

@@ -241,7 +241,10 @@ export function ProjectDetailView({
 
     const pollProject = async () => {
       try {
-        const res = await fetch(`/api/projects/${project.id}`);
+        const res = await fetch(`/api/projects/${project.id}?_t=${Date.now()}`, {
+          cache: "no-store",
+          headers: { Pragma: "no-cache", "Cache-Control": "no-cache" },
+        });
         const data = await res.json();
         if (data.success && data.project) {
           setProject(data.project);
