@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, connection } from "next/server";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { db, socialConnections } from "@/db";
 import { eq } from "drizzle-orm";
@@ -10,6 +10,7 @@ import {
 } from "@/lib/zernio";
 
 export async function GET() {
+  await connection();
   try {
     const { userId } = await auth();
     if (!userId) {

@@ -1,10 +1,11 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, connection } from "next/server";
 import { currentUser } from "@clerk/nextjs/server";
 import { db, scheduledPosts } from "@/db";
 import { inngest } from "@/lib/inngest/client";
 import { eq, desc, asc } from "drizzle-orm";
 
 export async function GET() {
+  await connection();
   try {
     const user = await currentUser();
     const userId = user?.id || "default_user";

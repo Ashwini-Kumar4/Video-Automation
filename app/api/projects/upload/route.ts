@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, connection } from "next/server";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { db, projects } from "@/db";
 import { eq } from "drizzle-orm";
@@ -20,6 +20,7 @@ export const maxDuration = 300;
  * Max 2 videos per day, resets next day (midnight UTC).
  */
 export async function GET(req: NextRequest) {
+  await connection();
   try {
     let userId = "guest_user";
     try {

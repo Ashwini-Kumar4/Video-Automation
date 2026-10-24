@@ -1,9 +1,10 @@
-import { NextResponse } from "next/server";
+import { NextResponse, connection } from "next/server";
 import { currentUser } from "@clerk/nextjs/server";
 import { db, shortVideos } from "@/db";
 import { eq, desc, isNotNull, or } from "drizzle-orm";
 
 export async function GET() {
+  await connection();
   try {
     const user = await currentUser();
     const userId = user?.id;
