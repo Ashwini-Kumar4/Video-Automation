@@ -13,7 +13,6 @@ import {
   getS3Config,
 } from "@/lib/aws/s3";
 
-export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 /**

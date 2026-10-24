@@ -5,7 +5,6 @@ import { eq } from "drizzle-orm";
 import { inngest } from "@/lib/inngest/client";
 import { generateSignedVideoUrl } from "@/lib/aws/s3";
 
-export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {

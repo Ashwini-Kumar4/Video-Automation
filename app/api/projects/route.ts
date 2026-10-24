@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { currentUser } from "@clerk/nextjs/server";
 import { db, projects, shortVideos } from "@/db";
 import { eq, or, desc } from "drizzle-orm";
-export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {

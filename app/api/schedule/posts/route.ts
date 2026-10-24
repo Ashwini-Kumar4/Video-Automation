@@ -3,7 +3,6 @@ import { currentUser } from "@clerk/nextjs/server";
 import { db, scheduledPosts } from "@/db";
 import { inngest } from "@/lib/inngest/client";
 import { eq, desc, asc } from "drizzle-orm";
-export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {

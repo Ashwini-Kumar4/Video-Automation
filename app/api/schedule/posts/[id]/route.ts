@@ -7,8 +7,6 @@ interface RouteParams {
   params: Promise<{ id: string }>;
 }
 
-export const dynamic = "force-dynamic";
-
 export async function DELETE(req: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params;
