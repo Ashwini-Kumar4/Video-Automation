@@ -415,28 +415,32 @@ export const analyzeAndTranscribeVideo = inngest.createFunction(
 
       // Step 2: Use Deepgram to transcribe the complete video from video URL
       const transcription = await step.run("generate-transcribe-deepgram", async () => {
-        const fs = await import("fs");
-        // Always prefer local staged video file if it exists so Deepgram transcribes authentic uploaded video
+        const isVercel = !!process.env.VERCEL;
+        // On Vercel, always use the S3 signed URL directly (no local filesystem)
+        // In local dev, prefer local staged video file if it exists
         let videoSourceToUse: string = projectData.videoUrl;
-        if (projectData.tempFilePath && fs.existsSync(projectData.tempFilePath)) {
-          videoSourceToUse = projectData.tempFilePath;
-        } else {
-          const tempDir = path.join(process.cwd(), ".temp_uploads");
-          if (fs.existsSync(tempDir)) {
-            const files = fs.readdirSync(tempDir);
-            const safeTitle = (projectData.title || "").replace(/[^a-zA-Z0-9._-]/g, "_");
-            const match = files.find(
-              (f: string) =>
-                f.includes(projectId) ||
-                (safeTitle && f.includes(safeTitle))
-            );
-            if (match) {
-              videoSourceToUse = path.join(tempDir, match);
-            } else if (files.length > 0) {
-              // If only one or multiple mp4s in temp_uploads, use the most recent
-              const mp4s = files.filter((f: string) => f.endsWith(".mp4"));
-              if (mp4s.length > 0) {
-                videoSourceToUse = path.join(tempDir, mp4s[mp4s.length - 1]);
+
+        if (!isVercel) {
+          const fs = await import("fs");
+          if (projectData.tempFilePath && fs.existsSync(projectData.tempFilePath)) {
+            videoSourceToUse = projectData.tempFilePath;
+          } else {
+            const tempDir = path.join(process.cwd(), ".temp_uploads");
+            if (fs.existsSync(tempDir)) {
+              const files = fs.readdirSync(tempDir);
+              const safeTitle = (projectData.title || "").replace(/[^a-zA-Z0-9._-]/g, "_");
+              const match = files.find(
+                (f: string) =>
+                  f.includes(projectId) ||
+                  (safeTitle && f.includes(safeTitle))
+              );
+              if (match) {
+                videoSourceToUse = path.join(tempDir, match);
+              } else if (files.length > 0) {
+                const mp4s = files.filter((f: string) => f.endsWith(".mp4"));
+                if (mp4s.length > 0) {
+                  videoSourceToUse = path.join(tempDir, mp4s[mp4s.length - 1]);
+                }
               }
             }
           }

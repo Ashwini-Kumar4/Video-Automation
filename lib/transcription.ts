@@ -182,36 +182,19 @@ export async function transcribeVideoWithDeepgram(
 ): Promise<TranscriptionResult> {
   let apiKey = apiKeyOverride || process.env.DEEPGRAM_API_KEY;
 
-  // Dynamically read from .env.local if process.env hasn't refreshed
-  if (!apiKey || apiKey.includes("your-")) {
-    try {
-      const fs = require("fs");
-      const path = require("path");
-      const envPath = path.join(process.cwd(), ".env.local");
-      if (fs.existsSync(envPath)) {
-        const envContent = fs.readFileSync(envPath, "utf-8");
-        const match = envContent.match(/DEEPGRAM_API_KEY=([^\r\n#]+)/);
-        if (match && match[1]) {
-          apiKey = match[1].trim();
-          process.env.DEEPGRAM_API_KEY = apiKey;
-        }
-      }
-    } catch (readErr) {
-      console.warn("[Deepgram] Could not read .env.local directly:", readErr);
-    }
-  }
 
   if (apiKey && !apiKey.includes("your-") && apiKey.length > 10) {
     try {
-      const fs = require("fs");
+      const fs = await import("fs");
+      const path = await import("path");
+      const isVercel = !!process.env.VERCEL;
       const deepgramUrl = "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&punctuate=true&utterances=true&diarize=false";
 
-      const path = require("path");
       let response: Response;
 
-      // Check if videoSource corresponds to a local file in current dir or .temp_uploads
+      // Check if videoSource corresponds to a local file (only in local dev, not on Vercel)
       let localFilePath: string | null = null;
-      if (typeof videoSource === "string" && !videoSource.startsWith("http://") && !videoSource.startsWith("https://")) {
+      if (!isVercel && typeof videoSource === "string" && !videoSource.startsWith("http://") && !videoSource.startsWith("https://")) {
         if (fs.existsSync(videoSource)) {
           localFilePath = videoSource;
         } else {
@@ -238,7 +221,7 @@ export async function transcribeVideoWithDeepgram(
           },
           body: new Uint8Array(videoSource),
         });
-      } else if (localFilePath && fs.existsSync(/*turbopackIgnore: true*/ localFilePath)) {
+      } else if (!isVercel && localFilePath && fs.existsSync(/*turbopackIgnore: true*/ localFilePath)) {
         console.log(`[Deepgram] Transcribing local video file on disk: ${localFilePath}`);
         const fileBuf = fs.readFileSync(/*turbopackIgnore: true*/ localFilePath);
         response = await fetch(deepgramUrl, {
@@ -267,8 +250,8 @@ export async function transcribeVideoWithDeepgram(
           clearTimeout(timeoutId);
         }
 
-        // If URL fetch failed (e.g. S3 403 SignatureDoesNotMatch), fallback to local staged file if available
-        if (!response.ok) {
+        // If URL fetch failed (e.g. S3 403 SignatureDoesNotMatch), fallback to local staged file if available (local dev only)
+        if (!response.ok && !isVercel) {
           const tempDir = path.join(process.cwd(), ".temp_uploads");
           if (fs.existsSync(tempDir)) {
             const files = fs.readdirSync(tempDir);

@@ -73,25 +73,23 @@ export async function POST(req: NextRequest) {
     if (autoAnalyze) {
       after(async () => {
         let dispatchedViaInngest = false;
-        if (process.env.INNGEST_EVENT_KEY) {
-          try {
-            await inngest.send({
-              name: "video/process.analyze",
-              data: {
-                projectId,
-                userId,
-                videoUrl: signedUrl,
-                aspectRatio,
-                clipLength,
-                captionPreset,
-              },
-            });
-            dispatchedViaInngest = true;
-          } catch (inngestErr) {
-            console.warn(
-              `[API:projects/upload/complete] Inngest send error (${(inngestErr as Error)?.message}). Falling back to direct worker...`
-            );
-          }
+        try {
+          await inngest.send({
+            name: "video/process.analyze",
+            data: {
+              projectId,
+              userId,
+              videoUrl: signedUrl,
+              aspectRatio,
+              clipLength,
+              captionPreset,
+            },
+          });
+          dispatchedViaInngest = true;
+        } catch (inngestErr) {
+          console.warn(
+            `[API:projects/upload/complete] Inngest send error (${(inngestErr as Error)?.message}). Falling back to direct worker...`
+          );
         }
 
         if (!dispatchedViaInngest) {
