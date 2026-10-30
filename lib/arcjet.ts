@@ -62,10 +62,10 @@ export const videoUploadArcjet = arcjet({
         ]
       : []),
 
-    // 4. Prompt Injection Detection: Evaluates text for prompt injection, jailbreaks,
-    // and system instruction override attacks before feeding to AI models
+    // 4. Prompt Injection Detection: Set to DRY_RUN on upload so video titles do not cause false-positive blocks.
+    // Live detection is strictly enforced downstream on actual AI prompt endpoints (aiEndpointArcjet).
     detectPromptInjection({
-      mode: "LIVE",
+      mode: "DRY_RUN",
     }),
 
     // 5. Sensitive Information redaction/block
@@ -209,15 +209,9 @@ export async function protectVideoUpload(
 ): Promise<SecurityCheckResult> {
   const safeUserId = userId && userId.trim() !== "" ? userId : "guest_user";
 
-  // Check prompt injection signatures (Defense-in-depth)
+  // Log notice if prompt-like pattern detected in filename/title, but do not block video uploads
   if (hasPromptInjectionSignature(textToScan)) {
-    return {
-      allowed: false,
-      status: 400,
-      reason: "PROMPT_INJECTION",
-      error: "Security Alert: Potential prompt injection or adversarial instruction detected in your video title/input. Please adjust your text and try again.",
-      details: { detected: true },
-    };
+    console.warn("[Arcjet:Upload] Notice: prompt signature pattern noted in video title/filename:", textToScan);
   }
 
   // 1. Arcjet Rule Evaluation
@@ -247,15 +241,8 @@ export async function protectVideoUpload(
           };
         }
       } else if (decision.reason.isPromptInjection()) {
-        return {
-          allowed: false,
-          status: 400,
-          reason: "PROMPT_INJECTION",
-          error: "Security Alert: Potential prompt injection or adversarial instruction detected in your video title/input. Please adjust your text and try again.",
-          details: {
-            detected: true,
-          },
-        };
+        // DRY_RUN mode for uploads so filenames do not block user
+        console.warn("[Arcjet:Upload] Prompt injection flagged on video title in DRY_RUN mode:", textToScan);
       } else if (decision.reason.isSensitiveInfo()) {
         return {
           allowed: false,
