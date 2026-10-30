@@ -235,7 +235,7 @@ export async function transcribeVideoWithDeepgram(
       } else if (typeof videoSource === "string" && (videoSource.startsWith("http://") || videoSource.startsWith("https://"))) {
         console.log(`[Deepgram] Transcribing video with Deepgram Nova-2 model from URL: ${videoSource}`);
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 35000);
+        const timeoutId = setTimeout(() => controller.abort(), 120000);
         try {
           response = await fetch(deepgramUrl, {
             method: "POST",

@@ -161,7 +161,15 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
 
     after(async () => {
       let dispatchedViaInngest = false;
-      if (process.env.INNGEST_EVENT_KEY) {
+      const isLocalDevInngest = process.env.INNGEST_DEV === "1";
+      const hasValidInngestCloudKeys =
+        !!process.env.INNGEST_EVENT_KEY &&
+        !process.env.INNGEST_EVENT_KEY.includes("your-") &&
+        !!process.env.INNGEST_SIGNING_KEY &&
+        !process.env.INNGEST_SIGNING_KEY.includes("your-") &&
+        process.env.INNGEST_SIGNING_KEY.length > 10;
+
+      if (isLocalDevInngest || hasValidInngestCloudKeys) {
         try {
           const sendResult = await inngest.send({
             name: "video/process.analyze",

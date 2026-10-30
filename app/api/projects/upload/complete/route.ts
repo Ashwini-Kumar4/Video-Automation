@@ -73,23 +73,33 @@ export async function POST(req: NextRequest) {
     if (autoAnalyze) {
       after(async () => {
         let dispatchedViaInngest = false;
-        try {
-          await inngest.send({
-            name: "video/process.analyze",
-            data: {
-              projectId,
-              userId,
-              videoUrl: signedUrl,
-              aspectRatio,
-              clipLength,
-              captionPreset,
-            },
-          });
-          dispatchedViaInngest = true;
-        } catch (inngestErr) {
-          console.warn(
-            `[API:projects/upload/complete] Inngest send error (${(inngestErr as Error)?.message}). Falling back to direct worker...`
-          );
+        const isLocalDevInngest = process.env.INNGEST_DEV === "1";
+        const hasValidInngestCloudKeys =
+          !!process.env.INNGEST_EVENT_KEY &&
+          !process.env.INNGEST_EVENT_KEY.includes("your-") &&
+          !!process.env.INNGEST_SIGNING_KEY &&
+          !process.env.INNGEST_SIGNING_KEY.includes("your-") &&
+          process.env.INNGEST_SIGNING_KEY.length > 10;
+
+        if (isLocalDevInngest || hasValidInngestCloudKeys) {
+          try {
+            await inngest.send({
+              name: "video/process.analyze",
+              data: {
+                projectId,
+                userId,
+                videoUrl: signedUrl,
+                aspectRatio,
+                clipLength,
+                captionPreset,
+              },
+            });
+            dispatchedViaInngest = true;
+          } catch (inngestErr) {
+            console.warn(
+              `[API:projects/upload/complete] Inngest send error (${(inngestErr as Error)?.message}). Falling back to direct worker...`
+            );
+          }
         }
 
         if (!dispatchedViaInngest) {
